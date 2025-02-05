@@ -21,8 +21,9 @@ export class DetectionService {
       })
     );
   }
-  getDetections(): Observable<any[]> {
-    return this.http.get<any[]>(this.apiUrl, {
+
+  getDetections(userId: string | undefined): Observable<any[]> {
+    return this.http.get<any[]>(this.apiUrl + `?user_id=${userId}`, {
       headers: new HttpHeaders()
     }).pipe(
       catchError(error => {

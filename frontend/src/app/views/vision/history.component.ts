@@ -22,7 +22,12 @@ import {
   ModalBodyComponent,
   ModalComponent,
   ModalHeaderComponent,
-  ButtonDirective, WidgetStatFComponent, ModalTitleDirective, ButtonCloseDirective, ModalFooterComponent
+  ButtonDirective,
+  WidgetStatFComponent,
+  ModalTitleDirective,
+  ButtonCloseDirective,
+  ModalFooterComponent,
+  LocalStorageService
 } from '@coreui/angular';
 import {IconDirective} from "@coreui/icons-angular";
 import {DetectionService} from "../../services/detection.service";
@@ -40,6 +45,7 @@ export class HistoryComponent implements OnInit, AfterViewInit, OnDestroy {
   protected detections = signal<any[]>([]);
   private detectionSubscription: Subscription | undefined;
   protected isCorruptedEnrichmentVisible = signal<boolean>(false);
+  readonly uuid: string | undefined;
 
   icons = {cilChartPie, cilArrowRight, cilBug};
   meanConfidence = computed(() => {
@@ -90,11 +96,13 @@ export class HistoryComponent implements OnInit, AfterViewInit, OnDestroy {
     @Inject(DOCUMENT) private document: Document,
     private renderer: Renderer2,
     private detectionService: DetectionService,
+    private localStorageService: LocalStorageService,
   ) {
+    this.uuid = this.localStorageService.getItem('uuid');
   }
 
   ngOnInit(): void {
-    this.detectionSubscription = this.detectionService.getDetections().subscribe((detections: any[]) => {
+    this.detectionSubscription = this.detectionService.getDetections(this.uuid).subscribe((detections: any[]) => {
       const adaptDetections = (detections: any[]): any[] => {
         return detections.sort((a, b) => {
           return (b?.created_at ? new Date(b.created_at).getTime() : 0) - (a?.created_at ? new Date(a.created_at).getTime() : 0);

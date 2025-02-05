@@ -2,14 +2,35 @@
 require_relative '../services/snowflake_id_service'
 
 class DetectionsController < ApplicationController
-
-  # def index
-  #   predictions = PredictionResult.all
-  #   render json: predictions
-  # end
-
   def index
-    render json: PlantService.new.get_predictions
+    user_id = params[:user_id]
+
+    begin
+      predictions = PredictionResult
+                      .where(user_id: user_id)
+                      .select(:id, :request_id, :user_id, :created_at, :enrichment, :result)
+                      .map do |prediction|
+
+        unless prediction.result.nil?
+          result = JSON.parse(prediction.result.gsub('=>', ':'))
+          {
+            id: prediction.id,
+            request_id: prediction.request_id,
+            user_id: prediction.user_id,
+            plant: result["plant"],
+            disease: result["disease"],
+            confidence: result["confidence"],
+            processed_image: result["processed_image"],
+            enrichment: prediction.enrichment,
+            created_at: prediction.created_at
+          }
+        end
+      end
+
+      render json: predictions.compact
+    rescue => e
+      render json: { error: "An error has occurred: #{e.message}" }, status: 500
+    end
   end
 
   def dashboard
@@ -20,6 +41,7 @@ class DetectionsController < ApplicationController
 
     render json: top_diseases
   end
+
   def create
     uploaded_file = params[:image]
     user_id = params[:user_id]
@@ -92,5 +114,4 @@ class DetectionsController < ApplicationController
 
     render json: response
   end
-
 end
