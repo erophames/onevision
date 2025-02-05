@@ -1,0 +1,68 @@
+<c-tabs  [activeItemKey]="0" class="p-0">
+  <c-tabs-list variant="underline-border">
+    <button cTab [itemKey]="0">General Information</button>
+    <button cTab [itemKey]="1">Fertilizer / Soil</button>
+    <button cTab [itemKey]="2">Irrigation Practices</button>
+    <button cTab [itemKey]="3">Harvesting</button>
+  </c-tabs-list>
+  <c-tabs-content>
+    <c-tab-panel [itemKey]="0">
+      <c-row class="mt-3">
+        <c-col [md]="4" [xl]="4" [lg]="4" class="d-none d-sm-block d-md-block">
+          <c-card class="mb-3">
+            <img cImg [src]="detection()?.image ?? './assets/images/empty_img.png'" cCardImg="top" height="300" width="300" alt="">
+          </c-card>
+        </c-col>
+        <c-col [md]="8" [xl]="8" [lg]="8">
+          <c-row>
+            <c-col [md]="6" [xl]="6" [lg]="6" [xs]="8" [sm]="8" >
+              <label cLabel for="inputPlant">Plant Name</label>
+              <input cFormControl id="inputPlant" [disabled]="true" [readOnly]="true" [value]="detection()?.plant?.name"/>
+            </c-col>
+            <c-col [md]="6" [xl]="6" [lg]="6" [xs]="8" [sm]="8">
+              <label cLabel for="inputLatinName">Latin Name</label>
+              <input cFormControl id="inputLatinName" [disabled]="true" [readOnly]="true" [value]="detection()?.plant?.latin_name"/>
+            </c-col>
+          </c-row>
+          <c-row [gutter]="{gx: 1}">
+            <c-col [md]="12" [xs]="12" [lg]="12" [xl]="12">
+              <label cLabel for="inputInformation">General Information</label>
+              <textarea cFormControl id="inputInformation" rows="4" style="resize:none !important;" [value]="detection()?.plant?.information" [disabled]="true" [readOnly]="true" ></textarea>
+            </c-col>
+          </c-row>
+          <c-row [gutter]="{gx: 1}">
+            <c-col [md]="12" [xs]="12" [lg]="12" [xl]="12">
+              <label cLabel for="inputClimateConditions">Ideal Climate</label>
+              <textarea cFormControl id="inputClimateConditions" rows="4" style="resize:none !important;" [value]="detection()?.plant?.climatic_conditions" [disabled]="true" [readOnly]="true" ></textarea>
+            </c-col>
+          </c-row>
+        </c-col>
+      </c-row>
+    </c-tab-panel>
+    <c-tab-panel  [itemKey]="1">
+      <c-row [gutter]="{gx: 1}">
+        <c-col [md]="12" [xs]="12" [lg]="12" [xl]="12">
+          <label class="mt-3" cLabel for="inputFertilizer">Fertilization Strategies</label>
+          <textarea   cFormControl id="inputFertilizer" rows="8" style="resize:none !important;" [value]="detection()?.plant?.fertilization_strategies" [disabled]="true" [readOnly]="true" ></textarea>
+        </c-col>
+      </c-row>
+      <c-row>
+      <c-col [md]="12" [xs]="12" [lg]="12" [xl]="12">
+        <label class="mt-3" cLabel for="inputFertilizer">Soil Conditions</label>
+        <textarea   cFormControl id="inputSoil" rows="8" style="resize:none !important;" [value]="detection()?.plant?.soil_conditions" [disabled]="true" [readOnly]="true" ></textarea>
+      </c-col>
+      </c-row>
+    </c-tab-panel>
+    <c-tab-panel  [itemKey]="2">
+      <c-col [md]="12" [xs]="12" [lg]="12" [xl]="12">
+        <textarea class="mt-3" cFormControl id="inputIrrigation" rows="8" style="resize:none !important;" [value]="detection()?.plant?.irrigation_practices" [disabled]="true" [readOnly]="true" ></textarea>
+      </c-col>
+
+    </c-tab-panel>
+    <c-tab-panel  [itemKey]="3">
+      <c-col [md]="12" [xs]="12" [lg]="12" [xl]="12">
+        <textarea class="mt-3" cFormControl id="inputHarvesting" rows="8" style="resize:none !important;" [value]="detection()?.plant?.harvesting_guidelines" [disabled]="true" [readOnly]="true" ></textarea>
+      </c-col>
+    </c-tab-panel>
+  </c-tabs-content>
+</c-tabs>

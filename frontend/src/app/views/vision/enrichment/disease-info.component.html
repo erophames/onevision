@@ -1,0 +1,77 @@
+<c-tabs  [activeItemKey]="0" class="p-0">
+  <c-tabs-list variant="underline-border">
+    <button cTab [itemKey]="0">General Information</button>
+    <button cTab [itemKey]="1">Treatment</button>
+    <button cTab [itemKey]="2">IPM</button>
+    <button cTab [itemKey]="3">Other</button>
+  </c-tabs-list>
+  <c-tabs-content>
+    <c-tab-panel [itemKey]="0">
+      <c-row class="mt-3">
+        <c-col [md]="12" [xl]="12" [lg]="12">
+          <c-row>
+            <c-col [md]="12" [xl]="12" [lg]="12" [xs]="12" [sm]="12" >
+              <label cLabel for="inputPlant">Disease Name</label>
+              <input cFormControl id="inputPlant" [disabled]="true" [readOnly]="true" [value]="detection()?.disease?.name"/>
+            </c-col>
+            <c-col [md]="12" [xl]="12" [lg]="12" [xs]="12" [sm]="12" class="mt-2">
+              <label cLabel for="inputInformation">General Information</label>
+              <textarea cFormControl id="inputInformation" rows="4" style="resize:none !important;" [value]="detection()?.disease?.information" [disabled]="true" [readOnly]="true" ></textarea>
+            </c-col>
+          </c-row>
+          <c-row [gutter]="{gx: 1}">
+            <c-col [md]="12" [xs]="12" [lg]="12" [xl]="12" class="mt-2">
+              <label cLabel for="inputSymptoms">Symptoms</label>
+              <textarea cFormControl id="inputSymptoms" rows="4" style="resize:none !important;" [value]="detection()?.disease?.symptoms" [disabled]="true" [readOnly]="true" ></textarea>
+            </c-col>
+          </c-row>
+          <c-row [gutter]="{gx: 1}">
+            <c-col [md]="12" [xs]="12" [lg]="12" [xl]="12" class="mt-2">
+              <label cLabel for="inputMonitoring">Monitoring Guidelines</label>
+              <textarea cFormControl id="inputMonitoring" rows="4" style="resize:none !important;" [value]="detection()?.disease?.monitoring_guidelines" [disabled]="true" [readOnly]="true" ></textarea>
+            </c-col>
+
+          </c-row>
+        </c-col>
+      </c-row>
+    </c-tab-panel>
+    <c-tab-panel  [itemKey]="1">
+      <c-row [gutter]="{gx: 1}">
+        <c-col [md]="12" [xs]="12" [lg]="12" [xl]="12">
+          <label class="mt-3" cLabel for="inputTreatmentOrganic">Organic</label>
+          <textarea   cFormControl id="inputTreatmentOrganic" rows="5" style="resize:none !important;" [value]="detection()?.disease?.treatment?.organic" [disabled]="true" [readOnly]="true" ></textarea>
+        </c-col>
+        <c-col [md]="12" [xs]="12" [lg]="12" [xl]="12">
+          <label class="mt-3" cLabel for="inputTreatmentChemical">Chemical</label>
+          <textarea   cFormControl id="inputTreatmentChemical" rows="5" style="resize:none !important;" [value]="detection()?.disease?.treatment?.chemical" [disabled]="true" [readOnly]="true" ></textarea>
+        </c-col>
+      </c-row>
+      <c-row>
+      </c-row>
+    </c-tab-panel>
+    <c-tab-panel  [itemKey]="2">
+      <c-col [md]="12" [xs]="12" [lg]="12" [xl]="12">
+        <label class="mt-3" cLabel for="inputIPM">IPM Strategy</label>
+        <textarea  cFormControl id="inputIPM" rows="8" style="resize:none !important;" [value]="detection()?.disease?.IPM_strategies" [disabled]="true" [readOnly]="true" ></textarea>
+      </c-col>
+      <c-col [md]="12" [xs]="12" [lg]="12" [xl]="12">
+        <label class="mt-3" cLabel for="inputRestistant">Resistant Varities</label>
+        <textarea  cFormControl id="inputRestistant" rows="8" style="resize:none !important;" [value]="detection()?.plant?.pest_resistant_varieties" [disabled]="true" [readOnly]="true" ></textarea>
+      </c-col>
+    </c-tab-panel>
+    <c-tab-panel  [itemKey]="3">
+      <c-col [md]="12" [xs]="12" [lg]="12" [xl]="12">
+        <label class="mt-3" cLabel for="inputResearchDevelopment">Research Developments</label>
+        <textarea  cFormControl id="inputResearchDevelopment" rows="4" style="resize:none !important;" [value]="detection()?.disease?.research_developments" [disabled]="true" [readOnly]="true" ></textarea>
+      </c-col>
+      <c-col [md]="12" [xs]="12" [lg]="12" [xl]="12">
+        <label class="mt-3" cLabel for="inputSustainablePractice">Sustainable Practice</label>
+        <textarea  cFormControl id="inputSustainablePractice" rows="4" style="resize:none !important;" [value]="detection()?.disease?.sustainable_practices" [disabled]="true" [readOnly]="true" ></textarea>
+      </c-col>
+      <c-col [md]="12" [xs]="12" [lg]="12" [xl]="12">
+        <label class="mt-3" cLabel for="inputEconomicImpact">Economic Impact</label>
+        <textarea  cFormControl id="inputEconomicImpact" rows="4" style="resize:none !important;" [value]="detection()?.disease?.economic_impact" [disabled]="true" [readOnly]="true" ></textarea>
+      </c-col>
+    </c-tab-panel>
+  </c-tabs-content>
+</c-tabs>

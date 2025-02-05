@@ -1,0 +1,25 @@
+<div style="position: absolute; width: 0; height: 0; overflow: visible">
+<c-modal #modalLg  id="modalLg" size="xl" [visible]="false">
+  <c-modal-header>
+    <h5 cModalTitle>Plant and Pathogen Information</h5>
+    <button cButtonClose></button>
+  </c-modal-header>
+  <c-modal-body>
+    <c-tabs [activeItemKey]="'plantInfo'" >
+      <c-tabs-list variant="tabs">
+        <button cTab itemKey="plantInfo">Plant</button>
+        <button cTab itemKey="diseaseInfo">Disease</button>
+      </c-tabs-list>
+      <c-tabs-content>
+        <c-tab-panel class="p-3" itemKey="plantInfo">
+          <app-plant-info [detection]="detection"></app-plant-info>
+        </c-tab-panel>
+        <c-tab-panel class="p-3" itemKey="diseaseInfo">
+          <app-disease-info [detection]="detection"></app-disease-info>
+        </c-tab-panel>
+      </c-tabs-content>
+    </c-tabs>
+
+  </c-modal-body>
+</c-modal>
+</div>

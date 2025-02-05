@@ -1,0 +1,118 @@
+
+<c-row>
+  <c-col lg="4" xs="12" md="4" xl="4">
+    <c-widget-stat-f
+      [title]="'Common Plant'"
+      class="mb-3"
+      color="primary-gradient"
+      padding
+      [value]="mostUploadedPlant()"
+    >
+    </c-widget-stat-f>
+  </c-col>
+
+  <c-col lg="4" xs="12" md="4" xl="4">
+    <c-widget-stat-f
+      [title]="'Common Disease'"
+      class="mb-3"
+      color="primary-gradient"
+      padding
+      [value]="commonDisease()"
+    >
+    </c-widget-stat-f>
+  </c-col>
+  <c-col lg="4" xs="12" md="4" xl="4">
+    <c-widget-stat-f
+      [title]="'Mean Confidence'"
+      class="mb-3"
+      color="primary-gradient"
+      padding
+      [value]="meanConfidence() + '%'"
+    >
+    </c-widget-stat-f>
+  </c-col>
+</c-row>
+
+<c-row>
+  <c-col xs>
+    <c-card class="mb-4">
+      <c-card-body>
+        <table
+          [hover]="true"
+          [responsive]="true"
+          [striped]="true"
+          align="middle"
+          cTable
+          class="mb-0 border"
+        >
+          <thead class="text-nowrap text-truncate">
+          <tr>
+            <th class="bg-body-tertiary">Species</th>
+            <th class="bg-body-tertiary text-center d-none d-md-table-cell d-lg-table-cell d-xl-table-cell">Country</th>
+            <th class="bg-body-tertiary text-center ">Confidence</th>
+            <th class="bg-body-tertiary text-center">Information</th>
+            <th class="bg-body-tertiary d-none d-md-table-cell d-lg-table-cell d-xl-table-cell">Detection Date</th>
+          </tr>
+          </thead>
+          <tbody>
+          <ng-container *ngFor="let detection of detections() trackBy: trackByDetectionId">
+
+          <tr>
+                <td>
+                  <div>{{ detection.disease }}</div>
+                  <div class="small text-body-secondary text-nowrap">
+                <span>
+                  {{ detection.plant }}
+                </span>
+                  </div>
+                </td>
+                <td class="text-center d-md-table-cell d-none d-lg-table-cell d-xl-table-cell">
+
+                  <svg
+                    cIcon
+                    id="south_africa_{{detection.request_id}}"
+                    name="cifZa"
+                    size="xl"
+                    title="South Africa"
+                  ></svg>
+                </td>
+                <td>
+                  <div class="d-flex justify-content-between">
+                    <div class="float-start">
+                      <strong>{{ detection.confidence }}%</strong>
+                    </div>
+                  </div>
+                  <c-progress thin [value]="detection.confidence" [color]="detection.progressBarColor"
+                              aria-label="Usage"/>
+                </td>
+            <td class="text-center">
+              <button (click)="openEnrichmentModal(detection)" [disabled]="!detection.enrichment" cButton [color]="detection.enrichment && detection.enrichment !== '' ? 'primary' : 'secondary'" size="sm">Details</button>
+            </td>
+                <td class="d-none d-md-table-cell d-lg-table-cell d-xl-table-cell">
+                  <div class="fw-semibold text-nowrap">{{ detection.created_at | date:'yyyy-MM-dd hh:MM' }}</div>
+                </td>
+              </tr>
+          </ng-container>
+          </tbody>
+        </table>
+      </c-card-body>
+    </c-card>
+  </c-col>
+</c-row>
+
+<app-enrichment-modal></app-enrichment-modal>
+
+
+<c-modal id="corrupted-enrichment" [visible]="isCorruptedEnrichmentVisible()" (visibleChange)="handleEnrichmentCorruptionChange($event)">
+  <c-modal-header>
+    <h5 cModalTitle>Enrichment Corrupted</h5>
+    <button (click)="closeEnrichmentCorruption()" cButtonClose></button>
+  </c-modal-header>
+  <c-modal-body>It appears the enrichment is corrupted, would you like to request it again?</c-modal-body>
+  <c-modal-footer>
+    <button (click)="closeEnrichmentCorruption()" cButton color="secondary">
+      Close
+    </button>
+    <button (click)="closeEnrichmentCorruption()" cButton color="primary">Request</button>
+  </c-modal-footer>
+</c-modal>

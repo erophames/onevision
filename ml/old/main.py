@@ -1,0 +1,145 @@
+from fastapi import FastAPI, File, UploadFile, HTTPException
+from fastapi.responses import JSONResponse
+import numpy as np
+import tensorflow as tf
+from tensorflow import keras
+import json
+import io
+import logging
+import re
+# This is a sample service that the ruby predictor can access
+# An attempt was made to use PyCall bridge.
+# But I valued my sanity and decided that with FastAPI the ML "Service"
+# could actually be scaled horizontally across various cluster instances
+# Then an API load balancing gateway could be placed in front to divert
+# traffic on high load scenarios
+# - Fabian
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# Custom metric classes required for loading the model
+class SparsePrecision(tf.keras.metrics.Precision):
+    def update_state(self, y_true, y_pred, sample_weight=None):
+        y_pred = tf.argmax(y_pred, axis=-1)
+        super().update_state(y_true, y_pred, sample_weight)
+
+class SparseRecall(tf.keras.metrics.Recall):
+    def update_state(self, y_true, y_pred, sample_weight=None):
+        y_pred = tf.argmax(y_pred, axis=-1)
+        super().update_state(y_true, y_pred, sample_weight)
+
+class PathogenPredictor:
+    """Core prediction functionality extracted from the original class"""
+    IMG_SIZE = 300
+    TTA_STEPS = 5  # Test-time augmentation steps
+
+    def __init__(self, model_path):
+        self.model_path = model_path
+        self.model = None
+        self.class_labels = None
+
+    def load_model(self):
+        """Load the trained model and class labels"""
+        try:
+            self.model = keras.models.load_model(
+                self.model_path,
+                custom_objects={
+                    'SparsePrecision': SparsePrecision,
+                    'SparseRecall': SparseRecall
+                }
+            )
+
+            logger.info(self.model.summary())
+
+            # Load class labels
+            with open(f"{self.model_path}_class_names.json", 'r') as f:
+                self.class_labels = json.load(f)
+            logger.info("Model and labels loaded successfully")
+        except Exception as e:
+            logger.error(f"Error loading model: {str(e)}")
+            raise
+
+    def predict(self, image_bytes):
+        """Make a prediction on the uploaded image"""
+        try:
+            # Load and preprocess image
+            img = keras.preprocessing.image.load_img(
+                io.BytesIO(image_bytes),
+                target_size=(self.IMG_SIZE, self.IMG_SIZE)
+            )
+            img_array = keras.preprocessing.image.img_to_array(img)
+            img_array = tf.expand_dims(img_array, 0)
+
+            # Perform test-time augmentation
+            predictions = []
+            for _ in range(self.TTA_STEPS):
+                augmented = self._apply_tta_augmentation(img_array)
+                predictions.append(self.model.predict(augmented, verbose=0))
+
+            # Average predictions and format results
+            avg_prediction = np.mean(predictions, axis=0)
+            conf = np.max(avg_prediction)
+            class_idx = np.argmax(avg_prediction)
+            class_label = self.class_labels[class_idx]
+
+            # Extract parts of the class label for grouping
+            logger.info(f"Class Label: {class_label}")
+            pattern = r"^([A-Za-z,]+(?:_[A-Za-z]+)*)(?:[_\(].*)? (.*)$"
+
+            fruit, disease = re.match(pattern, class_label).groups()
+            fruit =  re.sub(r"_", " ", fruit)
+            disease =  re.sub(r"_", " ", disease).title()
+
+            return {
+                "plant": fruit,
+                "disease": disease,
+                "confidence": float(conf)
+            }
+        except Exception as e:
+            logger.error(f"Prediction failed: {str(e)}")
+            raise
+
+    def _apply_tta_augmentation(self, img_array):
+        """Apply random augmentations for test-time augmentation"""
+        return tf.image.random_flip_left_right(
+            tf.image.random_brightness(
+                tf.image.random_contrast(
+                    tf.image.random_flip_up_down(img_array),
+                    lower=0.8, upper=1.2
+                ),
+                max_delta=0.1
+            )
+        )
+
+# Initialize FastAPI app and predictor
+app = FastAPI()
+predictor = PathogenPredictor(model_path="./B2_EN_E/model.keras")
+
+@app.on_event("startup")
+async def startup_event():
+    """Load the model when the application starts"""
+    try:
+        predictor.load_model()
+    except Exception as e:
+        logger.error(f"Failed to initialize model: {str(e)}")
+        raise HTTPException(status_code=500, detail="Model initialization failed")
+
+@app.post("/predict", response_class=JSONResponse)
+async def predict_endpoint(file: UploadFile = File(...)):
+    """Endpoint for processing plant pathogen predictions"""
+    try:
+        # Read and validate image file
+        if not file.content_type.startswith('image/'):
+            raise HTTPException(status_code=400, detail="Invalid file type")
+
+        contents = await file.read()
+        result = predictor.predict(contents)
+        return result
+
+    except HTTPException as he:
+        raise
+    except Exception as e:
+        logger.error(f"Prediction error: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
