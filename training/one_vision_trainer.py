@@ -4,6 +4,7 @@ import argparse
 import numpy as np
 import tensorflow as tf
 from tensorflow import keras
+from tensorflow.keras.utils import register_keras_serializable
 from tensorflow.keras import layers, models, optimizers, losses, regularizers, callbacks
 from tensorflow.keras.applications.efficientnet_v2 import EfficientNetV2B2, preprocess_input
 from sklearn.utils import class_weight
@@ -12,66 +13,133 @@ import keras_tuner as kt
 import datetime
 import re
 
-"""
-Model Overview:
-This model uses transfer learning with EfficientNetV2B2, a convolutional neural network (CNN) pre-trained on ImageNet, to classify plant diseases from leaf images.
-The architecture has been enhanced with custom dense layers, dropout, and L2 regularization to prevent overfitting and improve the model’s generalization.
-
-Training Process:
-
-1. Dataset Processing:
-   - Images are loaded from the dataset and resized to 300×300 pixels for optimal feature extraction.
-   - Data augmentation is applied, including random flipping, rotation, zoom, contrast adjustments, and brightness to improve generalization.
-   - The model uses datasets such as:
-     - Plant Village (Kaggle)
-     - Pomegranate
-     - Bananas
-     - Plant Seq
-     - Cannabis
-   - Target Disease: Cassava is included, considering the prevalence of gemini virus.
-
-2. Feature Extraction:
-   - The EfficientNetV2B2 base model is initially frozen to leverage the pre-trained features from ImageNet.
-   - A custom head with dense layers, dropout, and batch normalization is added for better performance on plant disease classification.
-   - The model's final fully connected layers use softmax activation to output class probabilities for each disease.
-
-3. Optimization:
-   - Adam Optimizer: An adaptive learning rate schedule is used, with an initial learning rate of 1e-3 and a decay rate of 0.96, ensuring steady convergence.
-   - Loss Function: Sparse Categorical Crossentropy is used, suitable for multi-class classification.
-   - Metrics: Precision, Recall, and Accuracy are used, with custom SparsePrecision and SparseRecall metrics to handle sparse categorical data effectively.
-
-4. Class Balancing:
-   - Class weights are computed to address imbalances in the dataset, ensuring the model focuses equally on all classes, particularly underrepresented plant diseases.
-
-5. Fine-tuning:
-   - After the initial training phase, the top layers of EfficientNetV2B2 are unfrozen and trained at a lower learning rate (1e-5) to fine-tune the model and further enhance classification accuracy.
-
-6. Hyperparameter Tuning:
-   - Random Search is used to fine-tune the model’s hyperparameters, including dropout rates and L2 regularization. This process, though time-consuming, ensures the best possible configuration for the model.
-   - Hyperparameters: Dropout rates range from 0.2 to 0.5, and L2 regularization varies from 1e-5 to 1e-3.
-
-Inference (Prediction Process):
-- Test-Time Augmentation (TTA): During inference, the model generates multiple augmented versions of the input image to enhance prediction robustness.
-- The model averages predictions from these augmented versions, improving the confidence of the class prediction.
-- The most probable class label is identified, with a corresponding confidence score provided.
-
-Predicted Output:
-- The prediction includes the fruit type, disease name, and confidence level. A regular expression extracts and cleans up the predicted class label to return readable output (e.g., "Banana", "Leaf Spot").
-
-Code Structure:
-1. Data Pipeline: The _create_data_pipeline() method handles the dataset loading, preprocessing, and augmentation, ensuring the data is efficiently prepared for training.
-2. Model Construction: The model is built using EfficientNetV2B2 as the base model, with additional dense layers and regularization techniques.
-3. Training: The train() method manages both the initial training and fine-tuning phases. It incorporates class weights, early stopping, and model checkpointing to optimize the training process.
-4. Prediction: The predict() method loads a trained model and class labels, applies preprocessing to the input image, and performs predictions with test-time augmentation for enhanced accuracy.
-
-
--- Fabian
-"""
-
 # Setup logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 os.environ["CUDA_VISIBLE_DEVICES"] = ""
+
+@register_keras_serializable(package='Custom')
+class ChannelAttention(layers.Layer):
+    def __init__(self, reduction_ratio=16, **kwargs):
+        super(ChannelAttention, self).__init__(**kwargs)
+        self.reduction_ratio = reduction_ratio
+
+    def build(self, input_shape):
+        channels = input_shape[-1]
+        self.dense_1 = layers.Dense(channels // self.reduction_ratio, activation='relu')
+        self.dense_2 = layers.Dense(channels, activation='sigmoid')
+
+    def call(self, inputs):
+        avg_pool = layers.GlobalAveragePooling2D()(inputs)
+        avg_pool = layers.Reshape((1, 1, avg_pool.shape[1]))(avg_pool)
+        x = self.dense_1(avg_pool)
+        x = self.dense_2(x)
+        return inputs * x
+
+    def get_config(self):
+        config = super(ChannelAttention, self).get_config()
+        config.update({
+            'reduction_ratio': self.reduction_ratio,
+        })
+        return config
+
+@register_keras_serializable(package='Custom')
+class SpatialAttention(layers.Layer):
+    def __init__(self, **kwargs):
+        super(SpatialAttention, self).__init__(**kwargs)
+        self.conv = None
+
+    def build(self, input_shape):
+        self.conv = layers.Conv2D(1, kernel_size=7, strides=1, padding='same', activation='sigmoid')
+
+        super(SpatialAttention, self).build(input_shape)
+
+    def call(self, inputs):
+        x = self.conv(inputs)
+        return inputs * x
+
+    def get_config(self):
+        config = super(SpatialAttention, self).get_config()
+        return config
+
+@register_keras_serializable(package='Custom')
+class HybridAttentionBlock(layers.Layer):
+    def __init__(self, **kwargs):
+        super(HybridAttentionBlock, self).__init__(**kwargs)
+        self.channel_attention = ChannelAttention()
+        self.spatial_attention = SpatialAttention()
+
+    def build(self, input_shape):
+        # Call build methods of sub-layers to ensure they are built
+        self.channel_attention.build(input_shape)
+        self.spatial_attention.build(input_shape)
+        super(HybridAttentionBlock, self).build(input_shape)
+
+    def call(self, inputs):
+        if len(inputs.shape) != 4:
+            raise ValueError(f"Expected 4D tensor, got {len(inputs.shape)}D tensor.")
+        x = self.channel_attention(inputs)
+        x = self.spatial_attention(x)
+        return x
+
+    def get_config(self):
+        config = super(HybridAttentionBlock, self).get_config()
+        return config
+
+    @classmethod
+    def from_config(cls, config):
+        return cls(**config)
+
+class SparseF1(tf.keras.metrics.Metric):
+    """Computes F1 score for sparse categorical labels"""
+    def __init__(self, name='f1', **kwargs):
+        super().__init__(name=name, **kwargs)
+        self.precision = SparsePrecision()
+        self.recall = SparseRecall()
+        self.f1 = self.add_weight(name='f1', initializer='zeros')
+
+    def update_state(self, y_true, y_pred, sample_weight=None):
+        self.precision.update_state(y_true, y_pred, sample_weight)
+        self.recall.update_state(y_true, y_pred, sample_weight)
+
+        p = self.precision.result()
+        r = self.recall.result()
+        self.f1.assign(2 * ((p * r) / (p + r + tf.keras.backend.epsilon())))
+
+    def result(self):
+        return self.f1
+
+    def reset_state(self):
+        self.precision.reset_state()
+        self.recall.reset_state()
+        self.f1.assign(0)
+
+class TemperatureScaling(layers.Layer):
+    """Temperature scaling layer for confidence calibration"""
+    def __init__(self, initial_temp=1.0, max_temp=3.0, **kwargs):
+        super().__init__(**kwargs)
+        self.initial_temp = initial_temp
+        self.max_temp = max_temp
+        self.temperature = self.add_weight(
+            name='temperature',
+            shape=(1,),
+            initializer=tf.constant_initializer(initial_temp),
+            constraint=tf.keras.constraints.MinMaxNorm(
+                min_value=0.1, max_value=max_temp
+            ),
+            trainable=True
+        )
+
+    def call(self, inputs):
+        return inputs / self.temperature
+
+    def get_config(self):
+        config = super().get_config()
+        config.update({
+            'initial_temp': self.initial_temp,
+            'max_temp': self.max_temp
+        })
+        return config
 
 class SparsePrecision(tf.keras.metrics.Precision):
     def update_state(self, y_true, y_pred, sample_weight=None):
@@ -86,7 +154,7 @@ class SparseRecall(tf.keras.metrics.Recall):
 class AdvancedPathogenDetector:
     # Configuration
     IMG_SIZE = 300  # Increased for better feature capture
-    BATCH_SIZE = 16
+    BATCH_SIZE = 32
     INITIAL_EPOCHS = 30
     FINE_TUNE_EPOCHS = 5
     VALIDATION_SPLIT = 0.2
@@ -96,6 +164,8 @@ class AdvancedPathogenDetector:
     DROPOUT_RATE = 0.3
     LABEL_SMOOTHING = 0.1
     TTA_STEPS = 5  # Test-time augmentation steps
+    CALIBRATION_EPOCHS = 5
+    CALIBRATION_LR = 1e-4
 
     def __init__(self, dataset_path, output_model_path):
         self.dataset_path = dataset_path
@@ -178,54 +248,95 @@ class AdvancedPathogenDetector:
         if hp:
             dropout_rate = hp.Float('dropout', 0.2, 0.5, step=0.1)
             l2_reg = hp.Float('l2', 1e-5, 1e-3, sampling='log')
+            num_dense_layers = hp.Int('num_dense_layers', 1, 3)  # Add for tuning
+            dense_units = hp.Int('dense_units', 128, 512, step=64)
         else:
             dropout_rate = self.DROPOUT_RATE
             l2_reg = 1e-4
+            num_dense_layers = 2  # Default number of layers
+            dense_units = 256     # Default units
 
         # Transfer learning base (EfficientNetV2B2)
         base_model = EfficientNetV2B2(
             include_top=False,
             weights='imagenet',
             input_shape=(self.IMG_SIZE, self.IMG_SIZE, 3),
-            pooling='avg'
+            pooling=None
         )
         base_model.trainable = False
 
-        # Custom head
         inputs = layers.Input(shape=(self.IMG_SIZE, self.IMG_SIZE, 3))
-        x = base_model(inputs)
-        x = layers.Dropout(dropout_rate)(x)
-        x = layers.Dense(256,
-            activation='swish',
-            kernel_regularizer=regularizers.l2(l2_reg))(x)
-        x = layers.BatchNormalization()(x)
-        outputs = layers.Dense(len(self.class_labels),
-            activation='softmax')(x)
 
-        model = keras.Model(inputs, outputs)
+        x = base_model(inputs)
+
+        x = HybridAttentionBlock()(x)
+        x = layers.GlobalAveragePooling2D()(x)
+
+        for _ in range(num_dense_layers):  # Adding multiple dense layers
+            x = layers.Dense(dense_units, activation='swish', kernel_regularizer=regularizers.l2(l2_reg))(x)
+            x = layers.BatchNormalization()(x)
+            x = layers.Dropout(dropout_rate)(x)
+
+        logits = layers.Dense(len(self.class_labels))(x)
+        temp_scaler = TemperatureScaling()
+        temp_scaler.trainable = False  # Freeze temperature during initial training
+        scaled_logits = temp_scaler(logits)
+
+        model = keras.Model(inputs, scaled_logits)
 
         # Custom learning rate with decay
         lr_schedule = optimizers.schedules.ExponentialDecay(
             initial_learning_rate=self.INITIAL_LR,
             decay_steps=1000,
-            decay_rate=0.96
+            decay_rate=0.96,
+            staircase=True
         )
 
         model.compile(
             optimizer=optimizers.Adam(learning_rate=lr_schedule),
-            loss=losses.SparseCategoricalCrossentropy(),
+            loss=losses.SparseCategoricalCrossentropy(from_logits=True),
             metrics=[
                 'accuracy',
                 SparsePrecision(name='precision'),
-                SparseRecall(name='recall')
+                SparseRecall(name='recall'),
+                SparseF1(name='f1')
             ]
         )
         return model
 
+    def _calibrate_temperature(self, model, val_ds):
+            """Calibrate temperature scaling on validation set"""
+            # Freeze all layers except temperature scaling
+            for layer in model.layers:
+                if isinstance(layer, TemperatureScaling):
+                    layer.trainable = True
+                else:
+                    layer.trainable = False
+
+            model.compile(
+                optimizer=optimizers.Adam(learning_rate=self.CALIBRATION_LR),
+                loss=losses.SparseCategoricalCrossentropy(from_logits=True),
+                metrics=['accuracy']
+            )
+
+            logger.info("Calibrating temperature scaling...")
+            history = model.fit(
+                val_ds,
+                epochs=self.CALIBRATION_EPOCHS,
+                callbacks=[
+                    callbacks.EarlyStopping(
+                        monitor='loss',
+                        patience=2,
+                        restore_best_weights=True
+                    )
+                ]
+            )
+            return model
+
     def _get_callbacks(self):
         return [
             callbacks.EarlyStopping(
-                monitor='val_loss',
+                monitor='loss',
                 patience=3,
                 restore_best_weights=True
             ),
@@ -237,7 +348,62 @@ class AdvancedPathogenDetector:
             callbacks.TensorBoard(log_dir='./logs')
         ]
 
+    def hyperparameter_bayesian__tune(self, train_ds, val_ds):
+        logger.info("Hyperparameter tuning with BayesianOptimization...")
+
+        tuner = kt.BayesianOptimization(
+            lambda hp: self._build_model(hp),
+            objective='val_accuracy',
+            max_trials=10,
+            executions_per_trial=2,
+            directory='tuning',
+            project_name='pathogen_detection',
+            overwrite=True
+        )
+
+        tuner.search(
+            train_ds,
+            validation_data=val_ds,
+            epochs=10,
+            callbacks=[self._get_callbacks()[0]]
+        )
+
+        best_hps = tuner.get_best_hyperparameters(num_trials=1)[0]
+        logger.info(f"Optimal dropout rate: {best_hps.get('dropout')}")
+        logger.info(f"Optimal L2 regularization: {best_hps.get('l2')}")
+
+        return tuner.hypermodel.build(best_hps)
+
+    def hyperparameter_hyperband_tune(self, train_ds, val_ds):
+        logger.info("Hyperparameter tuning with Hyperband...")
+
+        tuner = kt.Hyperband(
+            lambda hp: self._build_model(hp),
+            objective='val_accuracy',
+            max_epochs=50,
+            factor=3,
+            executions_per_trial=2,
+            directory='tuning',
+            project_name='pathogen_detection',
+            overwrite=True
+        )
+
+        tuner.search(
+            train_ds,
+            validation_data=val_ds,
+            epochs=50,
+            callbacks=[self._get_callbacks()[0]]
+        )
+
+        best_hps = tuner.get_best_hyperparameters(num_trials=1)[0]
+        logger.info(f"Optimal dropout rate: {best_hps.get('dropout')}")
+        logger.info(f"Optimal L2 regularization: {best_hps.get('l2')}")
+
+        return tuner.hypermodel.build(best_hps)
+
     def hyperparameter_tune(self, train_ds, val_ds):
+        logger.info("Hyperparameter tuning with RandomSearch...")
+
         tuner = kt.RandomSearch(
             lambda hp: self._build_model(hp),
             objective='val_accuracy',
@@ -263,9 +429,16 @@ class AdvancedPathogenDetector:
     def train(self, tune_hyperparams=False):
         try:
             train_ds, val_ds = self._create_data_pipeline()
-
+            
             if tune_hyperparams:
-                model = self.hyperparameter_tune(train_ds, val_ds)
+                if tune_hyperparams=="random":
+                  model = self.hyperparameter_hyperband_tune(train_ds, val_ds)
+                elif tune_hyperparams == "bayesian":
+                   model = self.hyperparameter_bayesian__tune(train_ds, val_ds)
+                elif tune_hyperparams == "hyperband":
+                   model = self.hyperparameter_hyperband_tune(train_ds, val_ds)
+                else:
+                    raise ExceptionType("Unsupported hyperparameter")
             else:
                 model = self._build_model()
 
@@ -279,6 +452,9 @@ class AdvancedPathogenDetector:
                 callbacks=self._get_callbacks()
             )
 
+            # Temperature calibration
+            model = self._calibrate_temperature(model, val_ds)
+
             # Fine-tuning
             logger.info("Starting fine-tuning...")
             base_model = model.layers[1]
@@ -288,7 +464,7 @@ class AdvancedPathogenDetector:
 
             model.compile(
                 optimizer=optimizers.Adam(self.FINE_TUNE_LR),
-                loss=losses.SparseCategoricalCrossentropy(),
+                loss=losses.SparseCategoricalCrossentropy(from_logits=True),
                 metrics=['accuracy']
             )
 
@@ -312,10 +488,43 @@ class AdvancedPathogenDetector:
             logger.error(f"Training failed: {str(e)}")
             raise
 
+    def evaluate_calibration(self, dataset):
+            """Evaluate model calibration using Expected Calibration Error"""
+            logits = self.model.predict(dataset)
+            probs = tf.nn.softmax(logits)
+            labels = np.concatenate([y for x, y in dataset], axis=0)
+
+            # Bin calculation
+            bin_edges = np.linspace(0, 1, 11)
+            bin_indices = np.digitize(np.max(probs, axis=1), bin_edges)
+
+            ece = 0.0
+            for b in range(1, 11):
+                mask = bin_indices == b
+                if np.sum(mask) > 0:
+                    bin_probs = probs[mask]
+                    bin_labels = labels[mask]
+                    bin_acc = np.mean(np.argmax(bin_probs, axis=1) == bin_labels)
+                    bin_conf = np.mean(np.max(bin_probs, axis=1))
+                    ece += np.abs(bin_acc - bin_conf) * np.sum(mask)
+
+            return ece / len(labels)
+
     def predict(self, image_path):
         try:
-            # Load model and class labels
-            model = keras.models.load_model(self.output_model_path)
+            # Load model with custom objects and class labels
+            model = keras.models.load_model(
+                self.output_model_path,
+                custom_objects={
+                    'TemperatureScaling': TemperatureScaling,
+                    'SparseF1': SparseF1,
+                    'SparsePrecision': SparsePrecision,
+                    'SparseRecall': SparseRecall,
+                    'HybridAttentionBlock': HybridAttentionBlock,
+                    'ChannelAttention': ChannelAttention,
+                    'SpatialAttention': SpatialAttention
+                }
+            )
             with open(f"{self.output_model_path}_class_names.json", 'r') as f:
                 class_names = json.load(f)
 
@@ -323,32 +532,32 @@ class AdvancedPathogenDetector:
             img = keras.preprocessing.image.load_img(
                 image_path, target_size=(self.IMG_SIZE, self.IMG_SIZE))
             img_array = keras.preprocessing.image.img_to_array(img)
-            img_array = tf.expand_dims(img_array, 0)
+            img_array = tf.expand_dims(img_array, 0)  # Shape: (1, 300, 300, 3)
 
-            # Apply preprocessing (use the correct preprocessing method)
-            img_array = preprocess_input(img_array)
-
-            # Test-time augmentation
-            predictions = []
+            # Test-time augmentation with temperature scaling
+            logits = np.zeros((1, len(class_names)))
             for _ in range(self.TTA_STEPS):
                 augmented = self._apply_tta_augmentation(img_array)
-                predictions.append(model.predict(augmented, verbose=0))
+                preprocessed = preprocess_input(augmented)
+                logits += model.predict(preprocessed, verbose=0)
 
-            avg_prediction = np.mean(predictions, axis=0)
-            conf = np.max(avg_prediction)
-            class_idx = np.argmax(avg_prediction)
+            # Average logits and apply final softmax
+            avg_logits = logits / self.TTA_STEPS
+            probabilities = tf.nn.softmax(avg_logits).numpy()
+
+            # Get prediction results
+            conf = np.max(probabilities)
+            class_idx = np.argmax(probabilities)
             class_label = class_names[class_idx]
 
+            # Clean up label formatting
             logger.info(f"Class Label: {class_label}")
             pattern = r"^([A-Za-z,]+(?:_[A-Za-z]+)*)(?:[_\(].*)? (.*)$"
-
             fruit, disease = re.match(pattern, class_label).groups()
-            fruit = re.sub(r"_", " ", fruit)
-            disease = re.sub(r"_", " ", disease).title()
 
             return {
-                "fruit": fruit,
-                "disease": disease,
+                "fruit": re.sub(r"_", " ", fruit),
+                "disease": re.sub(r"_", " ", disease).title(),
                 "confidence": float(conf)
             }
 
@@ -358,10 +567,7 @@ class AdvancedPathogenDetector:
 
 
     def _apply_tta_augmentation(self, img_array):
-        # Apply input normalization first
-        img_array = preprocess_input(img_array)
-
-        # Random augmentation for TTA
+        # Random augmentation for TTA (without preprocessing)
         return tf.image.random_flip_left_right(
             tf.image.random_brightness(
                 tf.image.random_contrast(
@@ -387,31 +593,40 @@ def main():
     Copyright (c) {datetime.datetime.now().year} Fabian Franco-Roldan
 
     Model Architecture:
-    - Backbone: EfficientNetV2B2 (ImageNet pretrained)
-    - Custom Head:
-      • Global Average Pooling
-      • Dense (256 units) with SWISH activation
-      • Batch Normalization + Dropout
-      • Softmax Classification Layer
+
+    Backbone: EfficientNetV2B2 (ImageNet pretrained)
+
+    Custom Head:
+    • Hybrid Attention Block (Channel + Spatial Attention)
+    • Global Average Pooling
+    • Dense Layers (256 units) with SWISH activation
+    • Batch Normalization + Dropout
+    • Temperature Scaling for confidence calibration
+    • Softmax Classification Layer
 
     Key Features:
     ✅ 300x300px RGB input resolution
     ✅ Supports 50-1000 plant disease classes
     ✅ Test-Time Augmentation (TTA) for robust predictions
+    ✅ Hybrid Attention Mechanism for enhanced feature extraction
+    ✅ Temperature Scaling for calibrated confidence scores
     ✅ EfficientNetV2B2 preprocessing for input normalization
+    ✅ Class Weighting for imbalanced datasets
+    ✅ Hyperparameter Tuning (Random Search, Bayesian Optimization, Hyperband)
 
     Purpose:
-    Automated detection of plant diseases from leaf images with
-    state-of-the-art deep learning for precision agriculture.
+    Automated detection of plant diseases from leaf images using state-of-the-art deep learning techniques for precision agriculture.
+    The model incorporates advanced attention mechanisms, confidence calibration, and robust data augmentation for reliable predictions.
     \033[0m
     """)
 
     parser = argparse.ArgumentParser(description='Advanced Plant Pathogen Detection',
-                                            formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+                                    formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument('--dataset', required=False, help='Path to training dataset')
     parser.add_argument('--output', required=True, help='Model output path')
     parser.add_argument('--image', help='Image for prediction')
-    parser.add_argument('--tune', action='store_true', help='Enable hyperparameter tuning')
+    parser.add_argument('--tune', type=str, choices=['random', 'bayesian', 'hyperband'],
+                        help='Enable hyperparameter tuning with the specified method (random, bayesian, or hyperband)')
     args = parser.parse_args()
 
     # Validate arguments
@@ -426,7 +641,15 @@ def main():
         result = detector.predict(args.image)
         print(json.dumps(result, indent=2))
     elif args.dataset:
-        detector.train(tune_hyperparams=args.tune)
+        if args.tune:
+            if args.tune == 'random':
+                detector.train(tune_hyperparams='random')
+            elif args.tune == 'bayesian':
+                detector.train(tune_hyperparams='bayesian')
+            elif args.tune == 'hyperband':
+                detector.train(tune_hyperparams='hyperband')
+        else:
+            detector.train(tune_hyperparams=False)
 
 if __name__ == "__main__":
     main()

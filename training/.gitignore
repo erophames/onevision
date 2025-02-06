@@ -1,1 +1,4 @@
 tf_env/
+/data/
+/logs/
+/tuning/

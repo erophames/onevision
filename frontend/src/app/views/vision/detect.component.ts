@@ -281,7 +281,7 @@ export class DetectComponent implements OnInit, AfterViewInit, OnDestroy {
       detection.processed_image = this.img;
       this.enrichmentModal.open(detection);
     } catch {
-     // this.isCorruptedEnrichmentVisible.update(() => true);
+      this.isCorruptedEnrichmentVisible.update(() => true);
     }
   }
 
@@ -295,5 +295,9 @@ export class DetectComponent implements OnInit, AfterViewInit, OnDestroy {
 
   handleEnrichmentCorruptionChange(event: any) {
     this.isCorruptedEnrichmentVisible.update(() => event);
+  }
+
+  retryEnrichment(){
+    console.info('Retry enrichment logic not implemented.');
   }
 }

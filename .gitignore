@@ -32,3 +32,5 @@
 /config/master.key
 ml/t3_b2_model.keras:Zone.Identifier
 ml/t3_b2_model.keras_class_names.json:Zone.Identifier
+/ml/build/
+*.7z

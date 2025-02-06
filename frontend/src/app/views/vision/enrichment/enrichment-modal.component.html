@@ -2,7 +2,7 @@
 <c-modal #modalLg  id="modalLg" size="xl" [visible]="false">
   <c-modal-header>
     <h5 cModalTitle>Plant and Pathogen Information</h5>
-    <button cButtonClose></button>
+    <button cButtonClose (click)="close()"></button>
   </c-modal-header>
   <c-modal-body>
     <c-tabs [activeItemKey]="'plantInfo'" >
