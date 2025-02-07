@@ -429,7 +429,7 @@ class AdvancedPathogenDetector:
     def train(self, tune_hyperparams=False):
         try:
             train_ds, val_ds = self._create_data_pipeline()
-            
+
             if tune_hyperparams:
                 if tune_hyperparams=="random":
                   model = self.hyperparameter_hyperband_tune(train_ds, val_ds)
@@ -465,7 +465,12 @@ class AdvancedPathogenDetector:
             model.compile(
                 optimizer=optimizers.Adam(self.FINE_TUNE_LR),
                 loss=losses.SparseCategoricalCrossentropy(from_logits=True),
-                metrics=['accuracy']
+                metrics=[
+                    'accuracy',
+                    SparsePrecision(name='precision'),
+                    SparseRecall(name='recall'),
+                    SparseF1(name='f1')
+                ]
             )
 
             model.fit(
