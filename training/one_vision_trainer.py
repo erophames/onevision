@@ -14,10 +14,227 @@ import keras_tuner as kt
 import datetime
 import re
 import tensorflow as tf
+import random
+import time
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+print("Num GPUs Available: ", len(tf.config.list_physical_devices('GPU')))
+
+## Need to test this for faster compute.
+#mixed_precision.set_global_policy('mixed_float16')
+
+@register_keras_serializable(package='Custom')
+class SeparableBlock(layers.Layer):
+    def __init__(self, filters, kernel_size=3, strides=1, padding="same", use_bn=True, activation="swish", **kwargs):
+        """
+        A custom separable convolution block optimized for plant pathogen image classification.
+
+        This block uses depthwise separable convolutions, which help reduce the number of parameters
+        while maintaining representational power. This is particularly useful for large-scale plant disease
+        classification tasks where the model needs to be efficient yet powerful.
+
+        Args:
+            filters (int): Number of output filters after pointwise convolution.
+            kernel_size (int): Size of the depthwise convolution kernel (default: 3x3).
+            strides (int): Stride size for the convolution operation.
+            padding (str): Padding type ("same" ensures spatial dimensions remain unchanged).
+            use_bn (bool): Whether to use batch normalization to stabilize training.
+            activation (str): Activation function to introduce non-linearity (default: "swish", effective for deep learning).
+            **kwargs: Additional keyword arguments for the Keras layer.
+        """
+        super().__init__(**kwargs)
+        self.filters = filters
+        self.kernel_size = kernel_size
+        self.strides = strides
+        self.padding = padding
+        self.use_bn = use_bn
+        self.activation = activation
+
+        # Depthwise convolution captures spatial relationships without increasing parameter count.
+        self.depthwise_conv = layers.DepthwiseConv2D(
+            kernel_size=kernel_size,
+            strides=strides,
+            padding=padding,
+            depth_multiplier=1,
+            use_bias=False  # No bias needed since batch normalization is applied
+        )
+
+        # Batch normalization stabilizes training and prevents internal covariate shift.
+        self.bn1 = layers.BatchNormalization() if use_bn else None
+
+        # Pointwise convolution projects the depthwise-convolved features into the desired number of filters.
+        self.pointwise_conv = layers.Conv2D(filters, 1, use_bias=False)
+
+        # Second batch normalization step.
+        self.bn2 = layers.BatchNormalization() if use_bn else None
+
+        # Activation function introduces non-linearity; "swish" is effective for feature-rich datasets.
+        self.act = layers.Activation(activation) if activation else None
+
+    def build(self, input_shape):
+        """
+        Builds the layer by initializing subcomponents based on input shape.
+
+        This ensures the layers are correctly initialized before training.
+        """
+
+        # Build depthwise convolution layer
+        self.depthwise_conv.build(input_shape)
+        depthwise_output_shape = self.depthwise_conv.compute_output_shape(input_shape)
+
+        # Batch normalization for depthwise convolution output
+        if self.bn1 is not None:
+            self.bn1.build(depthwise_output_shape)
+
+        # Build pointwise convolution
+        self.pointwise_conv.build(depthwise_output_shape)
+        pointwise_output_shape = self.pointwise_conv.compute_output_shape(depthwise_output_shape)
+
+        # Batch normalization for pointwise convolution output
+        if self.bn2 is not None:
+            self.bn2.build(pointwise_output_shape)
+
+        # Activation function setup
+        if self.act is not None:
+            self.act.build(pointwise_output_shape)
+
+        super(SeparableBlock, self).build(input_shape)
+
+    def call(self, inputs):
+        """
+        Forward pass through the separable convolution block.
+
+        This function applies depthwise convolution, followed by optional batch normalization,
+        then pointwise convolution, and another optional batch normalization. Finally, it applies
+        the activation function to introduce non-linearity.
+
+        Returns:
+            Tensor: The transformed feature map.
+        """
+        x = self.depthwise_conv(inputs)
+        if self.bn1:
+            x = self.bn1(x)
+        x = self.pointwise_conv(x)
+        if self.bn2:
+            x = self.bn2(x)
+        return self.act(x) if self.act else x
+
+    def compute_output_shape(self, input_shape):
+        """
+        Computes the output shape of the block.
+
+        The final output shape depends on the depthwise and pointwise convolutions.
+
+        Args:
+            input_shape (tuple): Shape of the input tensor.
+
+        Returns:
+            tuple: Output shape of the feature map.
+        """
+        depthwise_shape = self.depthwise_conv.compute_output_shape(input_shape)
+        pointwise_shape = self.pointwise_conv.compute_output_shape(depthwise_shape)
+        return pointwise_shape
+
+    def get_config(self):
+        """
+        Returns the configuration of the layer, allowing it to be saved and loaded.
+        """
+        config = super(SeparableBlock, self).get_config()
+        config.update({
+            "filters": self.filters,
+            "kernel_size": self.kernel_size,
+            "strides": self.strides,
+            "padding": self.padding,
+            "use_bn": self.use_bn,
+            "activation": self.activation
+        })
+        return config
+
+    @classmethod
+    def from_config(cls, config):
+        """
+        Creates a new instance from a configuration dictionary.
+        """
+        return cls(**config)
+
+
+
+
+@register_keras_serializable(package='Custom')
+class ExciteBlock(layers.Layer):
+    """
+    ExciteBlock applies a channel-wise excitation to the input tensor. It uses a GlobalAveragePooling2D
+    followed by a dense layer and sigmoid activation to generate excitation weights for each channel.
+    """
+
+    def __init__(self, reduction_ratio=16, **kwargs):
+        """
+        Initializes the ExciteBlock with a reduction ratio for the excitation mechanism.
+
+        Args:
+            reduction_ratio (int): The ratio by which the number of channels is reduced in the bottleneck layer.
+            **kwargs: Additional arguments for the base Layer class.
+        """
+        super(ExciteBlock, self).__init__(**kwargs)
+        self.reduction_ratio = reduction_ratio
+
+    def build(self, input_shape):
+        """
+        Builds the ExciteBlock layer.
+
+        Args:
+            input_shape (tuple): Shape of the input tensor.
+        """
+        self.channel_axis = -1  # Channel axis is last (for NHWC format)
+        self.input_channels = input_shape[-1]
+
+        # Define the bottleneck layer (dense layer for channel-wise excitation)
+        self.fc1 = layers.Dense(self.input_channels // self.reduction_ratio, activation='relu', kernel_initializer='he_normal')
+        self.fc2 = layers.Dense(self.input_channels, activation='sigmoid', kernel_initializer='he_normal')
+
+        super(ExciteBlock, self).build(input_shape)
+
+    def call(self, inputs):
+        """
+        Forward pass of the ExciteBlock. Applies GlobalAveragePooling2D, followed by a bottleneck (dense layers)
+        and channel-wise scaling using the sigmoid activation.
+
+        Args:
+            inputs (tf.Tensor): Input tensor with shape (batch_size, height, width, channels).
+
+        Returns:
+            tf.Tensor: Tensor after applying excitation with the same shape as the input tensor.
+        """
+        # Global average pooling to reduce spatial dimensions (height x width) to 1x1
+        x = layers.GlobalAveragePooling2D()(inputs)  # (batch_size, channels)
+
+        # Reshape to (batch_size, 1, 1, channels) to match the input tensor shape
+        x = layers.Reshape((1, 1, x.shape[1]))(x)
+
+        # Excitation: Bottleneck with two dense layers
+        x = self.fc1(x)  # Reduce dimensions
+        x = self.fc2(x)  # Recover original dimension
+
+        # Scale the input tensor (broadcast the excitation to match the input tensor shape)
+        x = layers.Multiply()([inputs, x])
+
+        return x
+
+    def get_config(self):
+        """
+        Returns the configuration of the ExciteBlock for serialization.
+
+        Returns:
+            dict: The configuration dictionary.
+        """
+        config = super(ExciteBlock, self).get_config()
+        config.update({
+            "reduction_ratio": self.reduction_ratio
+        })
+        return config
+
 
 
 @register_keras_serializable(package='Custom')
@@ -280,47 +497,20 @@ class HybridAttentionBlock(layers.Layer):
 
 @register_keras_serializable(package="Custom")
 class SparseMacroF1(Metric):
-    """
-    Sparse Macro F1 Score for multi-class classification tasks, particularly useful for imbalanced classes.
-
-    This metric calculates the Macro F1 score across all classes, which is the harmonic mean of precision
-    and recall. The SparseMacroF1 is useful in scenarios where the classes are imbalanced, as it gives equal
-    weight to the F1 scores of each class, regardless of the class distribution.
-
-    **In the context of plant pathogen detection**, the SparseMacroF1 metric helps assess the model's
-    ability to accurately detect various plant diseases (each represented as a class) while considering
-    the precision and recall for each disease class equally. This is especially important when dealing with
-    rare or less common diseases that might not appear as frequently in the training data.
-
-    A high Macro F1 score indicates that the model is both precise and recall-effective across different
-    plant pathogen classes, thus ensuring that the model is not biased toward the more common plant diseases
-    and can correctly identify rare pathogens as well.
-
-    The calculation of the Macro F1 score is as follows:
-    1. **Precision**: The fraction of correct predictions for each class, specifically the correct identification
-       of plant diseases.
-    2. **Recall**: The fraction of actual occurrences of each plant pathogen correctly identified by the model.
-    3. **F1-score**: The harmonic mean of precision and recall, capturing the trade-off between them for each
-       class (disease).
-    """
-
     def __init__(self, num_classes: int, name="macro_f1", **kwargs):
         """
-        Initializes the SparseMacroF1 metric.
+        Initializes the SparseMacroF1 metric for evaluating the model's performance in plant pathogen classification.
 
         Args:
             num_classes (int): The number of classes in the classification problem (representing plant diseases).
-            name (str): Name of the metric (default is "macro_f1").
+            name (str): The name of the metric (default is "macro_f1").
             **kwargs: Additional arguments for the base Metric class.
-
-        Attributes:
-            true_positives (tf.Variable): Stores the count of true positives per class.
-            false_positives (tf.Variable): Stores the count of false positives per class.
-            false_negatives (tf.Variable): Stores the count of false negatives per class.
         """
         super(SparseMacroF1, self).__init__(name=name, **kwargs)
         self.num_classes = num_classes
 
+        # Initializing tensors to store the count of true positives (tp), false positives (fp),
+        # and false negatives (fn) for each class (pathogen) in the classification task.
         self.true_positives = self.add_weight(
             name="tp", shape=(num_classes,), initializer="zeros", dtype=tf.float32
         )
@@ -333,76 +523,105 @@ class SparseMacroF1(Metric):
 
     def update_state(self, y_true, y_pred, sample_weight=None):
         """
-        Updates the metric state by computing the true positives, false positives,
-        and false negatives for each class, in the context of plant pathogen detection.
+        Updates the state of the metric, which involves computing the true positives, false positives,
+        and false negatives for each class in the classification task.
 
         Args:
-            y_true (tf.Tensor): True labels (sparse integer labels representing plant diseases).
-            y_pred (tf.Tensor): Predicted logits or probabilities representing the likelihood of plant diseases.
-            sample_weight (tf.Tensor, optional): Weights for each sample (not used here).
-
-        Steps:
-            1. Convert `y_true` to integer type (class indices for plant pathogens).
-            2. Get the predicted class index by taking the argmax of `y_pred` (model's predicted disease class).
-            3. For each class (plant pathogen), compute:
-                - **True Positives (TP)**: Correctly identified plant pathogen (disease) instances.
-                - **False Positives (FP)**: Instances where a plant pathogen was incorrectly predicted.
-                - **False Negatives (FN)**: Instances where the plant pathogen was not detected but should have been.
-            4. Update the metric's state variables.
+            y_true: True labels (pathogen class labels).
+            y_pred: Predicted labels (predicted pathogen class probabilities).
+            sample_weight: Weights for each sample, if any (not used here).
         """
+        # Casting true labels to integers for comparison
         y_true = tf.cast(y_true, tf.int32)
+        # Getting the predicted class (pathogen) by selecting the index with the highest probability
         preds = tf.argmax(y_pred, axis=-1, output_type=tf.int32)
 
         def compute_class_stats(i):
-            """Computes TP, FP, and FN for a specific plant disease class `i`."""
+            """
+            Computes true positives, false positives, and false negatives for a specific class (pathogen).
 
-            true_mask = tf.equal(y_true, i)
-            pred_mask = tf.equal(preds, i)
+            Args:
+                i: The class (pathogen) index.
 
-            tp = tf.reduce_sum(tf.cast(tf.logical_and(true_mask, pred_mask), tf.float32))
-            fp = tf.reduce_sum(tf.cast(tf.logical_and(tf.logical_not(true_mask), pred_mask), tf.float32))
-            fn = tf.reduce_sum(tf.cast(tf.logical_and(true_mask, tf.logical_not(pred_mask)), tf.float32))
+            Returns:
+                tp, fp, fn: True positives, false positives, and false negatives for this class.
+            """
+            true_mask = tf.equal(y_true, i)  # Mask for actual class i
+            pred_mask = tf.equal(preds, i)  # Mask for predicted class i
+
+            tp = tf.reduce_sum(tf.cast(tf.logical_and(true_mask, pred_mask), tf.float32))  # True positives
+            fp = tf.reduce_sum(tf.cast(tf.logical_and(tf.logical_not(true_mask), pred_mask), tf.float32))  # False positives
+            fn = tf.reduce_sum(tf.cast(tf.logical_and(true_mask, tf.logical_not(pred_mask)), tf.float32))  # False negatives
 
             return tp, fp, fn
 
+        # Computing stats (tp, fp, fn) for all classes (pathogens)
         stats = tf.map_fn(compute_class_stats, tf.range(self.num_classes), dtype=(tf.float32, tf.float32, tf.float32))
 
+        # Updating accumulated true positives, false positives, and false negatives
         self.true_positives.assign_add(stats[0])
         self.false_positives.assign_add(stats[1])
         self.false_negatives.assign_add(stats[2])
 
     def result(self):
         """
-        Computes and returns the Macro F1-score for plant pathogen detection.
-
-        Steps:
-            1. Calculate precision for each plant disease class: TP / (TP + FP + epsilon)
-            2. Calculate recall for each plant disease class: TP / (TP + FN + epsilon)
-            3. Compute F1-score for each class: 2 * (Precision * Recall) / (Precision + Recall + epsilon)
-            4. Take the mean across all plant disease classes to get the Macro F1-score.
+        Computes the macro F1 score, which is the average of F1 scores across all pathogen classes.
+        The F1 score is a balance of precision and recall, which is crucial in assessing the performance
+        of a model in correctly classifying plant pathogens.
 
         Returns:
-            tf.Tensor: The Macro F1-score for plant pathogen detection.
+            float: The average macro F1 score across all classes (pathogens).
         """
-        epsilon = 1e-7
+        epsilon = 1e-7  # Small constant to avoid division by zero
+
+        # Calculate precision and recall for each class (pathogen)
         precision = self.true_positives / (self.true_positives + self.false_positives + epsilon)
         recall = self.true_positives / (self.true_positives + self.false_negatives + epsilon)
+
+        # Calculate F1 score per class
         f1_per_class = 2 * precision * recall / (precision + recall + epsilon)
 
+        # Return the average macro F1 score
         return tf.reduce_mean(f1_per_class)
 
     def reset_states(self):
         """
-        Resets the state variables (TP, FP, FN) to zero. This is important when evaluating
-        the metric across multiple batches, ensuring an accurate assessment of model performance
-        on unseen plant pathogen data.
+        Resets the state of the metric to prepare for the next epoch or batch of data.
+        It ensures the counts of true positives, false positives, and false negatives are reset.
         """
         self.true_positives.assign(tf.zeros_like(self.true_positives))
         self.false_positives.assign(tf.zeros_like(self.false_positives))
         self.false_negatives.assign(tf.zeros_like(self.false_negatives))
 
+    def get_config(self):
+        """
+        Retrieves the configuration of the metric, including the number of classes (pathogens).
+        This is important for saving and restoring the metric during training.
+
+        Returns:
+            dict: The configuration dictionary for this metric.
+        """
+        config = super(SparseMacroF1, self).get_config()
+        config.update({"num_classes": self.num_classes})  # Add number of classes to config
+        return config
+
+    @classmethod
+    def from_config(cls, config):
+        """
+        Restores the metric from its configuration, including the number of classes (pathogens).
+
+        Args:
+            config: The configuration dictionary for the metric.
+
+        Returns:
+            SparseMacroF1: A restored SparseMacroF1 metric object.
+        """
+        # Ensure num_classes is correctly passed during deserialization
+        num_classes = config.pop('num_classes')
+        return cls(num_classes=num_classes, **config)
 
 
+@register_keras_serializable(package="Custom")
 class SparseF1(tf.keras.metrics.Metric):
     """
     Computes the F1 score for sparse categorical labels, a critical metric for classification tasks
@@ -543,6 +762,7 @@ class TemperatureScaling(layers.Layer):
         })
         return config
 
+@register_keras_serializable(package="Custom")
 class SparsePrecision(tf.keras.metrics.Precision):
     """
     Computes the precision for sparse categorical labels, adapted for plant pathogen detection.
@@ -568,6 +788,7 @@ class SparsePrecision(tf.keras.metrics.Precision):
         y_pred = tf.argmax(y_pred, axis=-1)
         super().update_state(y_true, y_pred, sample_weight)
 
+@register_keras_serializable(package="Custom")
 class SparseRecall(tf.keras.metrics.Recall):
     """
     Computes the recall for sparse categorical labels, adapted for plant pathogen detection.
@@ -593,6 +814,66 @@ class SparseRecall(tf.keras.metrics.Recall):
         y_pred = tf.argmax(y_pred, axis=-1)
         super().update_state(y_true, y_pred, sample_weight)
 
+@register_keras_serializable(package="Custom")
+class ECECallback(tf.keras.callbacks.Callback):
+    """
+    Expected Calibration Error (ECE) Callback for TensorFlow/Keras training.
+
+    This callback calculates the Expected Calibration Error (ECE) at the end of each epoch.
+    ECE is a metric that quantifies how well the predicted probabilities align with actual
+    correctness likelihoods, which is particularly useful for model confidence assessment
+    in plant pathogen classification.
+
+    Args:
+        validation_data (tf.data.Dataset or tuple): The validation dataset (images, labels).
+    """
+
+    def __init__(self, validation_data):
+        """
+        Initializes the ECECallback with validation data.
+
+        The validation data is used to compute the model's confidence calibration at
+        the end of each training epoch.
+
+        Args:
+            validation_data (tf.data.Dataset or tuple): A dataset or (x_val, y_val) tuple.
+        """
+        super().__init__()
+        self.validation_data = validation_data
+
+    def on_epoch_end(self, epoch, logs=None):
+        """
+        Computes the Expected Calibration Error (ECE) at the end of an epoch.
+
+        ECE is calculated using the validation dataset, and the result is logged
+        under 'val_ece' in Keras' logs dictionary. It is also printed for tracking.
+
+        Args:
+            epoch (int): Current epoch number.
+            logs (dict, optional): Dictionary containing training metrics from Keras.
+        """
+        ece = self.evaluate_calibration(self.validation_data)
+        logs['val_ece'] = ece  # Store ECE in logs for Keras tracking
+        print(f" - Validation ECE: {ece:.4f}")
+
+    def get_config(self):
+        """
+        Returns the configuration of the callback.
+
+        This is necessary for Keras to correctly serialize and deserialize the callback.
+        """
+        return {'validation_data': self.validation_data}
+
+    @classmethod
+    def from_config(cls, config):
+        """
+        Creates an instance of ECECallback from a configuration dictionary.
+
+        Required for proper deserialization when loading the model.
+        """
+        return cls(**config)
+
+
 class AdvancedPathogenDetector:
     # Configuration
     IMG_SIZE = 300  # Increased for better feature capture
@@ -600,7 +881,7 @@ class AdvancedPathogenDetector:
     INITIAL_EPOCHS = 30
     FINE_TUNE_EPOCHS = 5
     VALIDATION_SPLIT = 0.2
-    SEED = 123
+    SEED = 2241400315
     INITIAL_LR = 1e-3
     FINE_TUNE_LR = 1e-5
     DROPOUT_RATE = 0.3
@@ -610,11 +891,13 @@ class AdvancedPathogenDetector:
     CALIBRATION_LR = 1e-4
 
     def __init__(self, dataset_path, output_model_path):
+
         self.dataset_path = dataset_path
         self.output_model_path = output_model_path
         self.class_labels = None
         self.class_weights = None
         self._validate_paths()
+        self._train_ds = None
 
     def _validate_paths(self):
         # Only validate dataset path if we're in training mode
@@ -693,13 +976,15 @@ class AdvancedPathogenDetector:
         ).map(
             lambda x, y: (preprocess_input(x), y),  # Apply preprocessing here
             num_parallel_calls=tf.data.AUTOTUNE
-        ).prefetch(buffer_size=tf.data.AUTOTUNE)
+        ).shuffle(buffer_size=300).prefetch(buffer_size=tf.data.AUTOTUNE)
 
-        # Prefetch validation data and apply preprocessing
+        # Prefetch validation data and apply preprocessing (no augmentation)
         val_ds = original_val_ds.map(
-            lambda x, y: (preprocess_input(x), y),  # Apply preprocessing here
+            lambda x, y: (preprocess_input(x), y),  # Apply only preprocessing here
             num_parallel_calls=tf.data.AUTOTUNE
         ).prefetch(buffer_size=tf.data.AUTOTUNE)
+
+        self._train_ds = train_ds
 
         return train_ds, val_ds
 
@@ -746,7 +1031,7 @@ class AdvancedPathogenDetector:
             dropout_rate = self.DROPOUT_RATE
             l2_reg = 1e-4
             num_dense_layers = 2  # Default number of layers
-            dense_units = 256     # Default units
+            dense_units = 512     # Default units
 
         # Transfer learning base (EfficientNetV2B2)
         base_model = EfficientNetV2B2(
@@ -760,11 +1045,11 @@ class AdvancedPathogenDetector:
         inputs = layers.Input(shape=(self.IMG_SIZE, self.IMG_SIZE, 3))
 
         x = base_model(inputs)
-
+        x = SeparableBlock(filters=512)(x)
         x = HybridAttentionBlock()(x)
         x = layers.GlobalAveragePooling2D()(x)
 
-        for _ in range(num_dense_layers):  # Adding multiple dense layers
+        for i in range(num_dense_layers):  # Adding multiple dense layers
             x = layers.Dense(dense_units, activation='swish', kernel_regularizer=regularizers.l2(l2_reg))(x)
             x = layers.BatchNormalization()(x)
             x = layers.Dropout(dropout_rate)(x)
@@ -797,6 +1082,9 @@ class AdvancedPathogenDetector:
                 SparseMacroF1(num_classes=num_classes)
             ]
         )
+
+        print(model.summary())
+
         return model
 
     def _calibrate_temperature(self, model, val_ds):
@@ -828,10 +1116,16 @@ class AdvancedPathogenDetector:
                 else:
                     layer.trainable = False
 
+            num_classes = len(self.class_labels)
+
             model.compile(
                 optimizer=optimizers.Adam(learning_rate=self.CALIBRATION_LR),
                 loss=losses.SparseCategoricalCrossentropy(from_logits=True),
-                metrics=['accuracy']
+                metrics=['accuracy',
+                         SparsePrecision(name='precision'),
+                         SparseRecall(name='recall'),
+                         SparseF1(name='f1'),
+                         SparseMacroF1(num_classes=num_classes)]
             )
 
             logger.info("Calibrating temperature scaling...")
@@ -1036,6 +1330,8 @@ class AdvancedPathogenDetector:
 
         return tuner.hypermodel.build(best_hps)
 
+
+
     def train(self, tune_hyperparams=False):
         """Trains the model with optional hyperparameter tuning and fine-tuning.
 
@@ -1082,6 +1378,7 @@ class AdvancedPathogenDetector:
             else:
                 model = self._build_model()
 
+            ece_callback = ECECallback(val_ds)
             # Initial training
             logger.info("Starting initial training...")
             history = model.fit(
@@ -1089,7 +1386,7 @@ class AdvancedPathogenDetector:
                 validation_data=val_ds,
                 epochs=self.INITIAL_EPOCHS,
                 class_weight=self.class_weights,
-                callbacks=self._get_callbacks()
+                callbacks=[ *self._get_callbacks()]
             )
 
             # Temperature calibration
@@ -1102,6 +1399,8 @@ class AdvancedPathogenDetector:
             for layer in base_model.layers[:-4]:
                 layer.trainable = False
 
+            num_classes = len(self.class_labels)
+
             model.compile(
                 optimizer=optimizers.Adam(self.FINE_TUNE_LR),
                 loss=losses.SparseCategoricalCrossentropy(from_logits=True),
@@ -1109,7 +1408,8 @@ class AdvancedPathogenDetector:
                     'accuracy',
                     SparsePrecision(name='precision'),
                     SparseRecall(name='recall'),
-                    SparseF1(name='f1')
+                    SparseF1(name='f1'),
+                    SparseMacroF1(num_classes=num_classes)
                 ]
             )
 
@@ -1124,6 +1424,7 @@ class AdvancedPathogenDetector:
 
             # Save final model
             model.save(self.output_model_path)
+
             with open(f"{self.output_model_path}_class_names.json", 'w') as f:
                 json.dump(self.class_labels, f)
 
@@ -1191,6 +1492,9 @@ class AdvancedPathogenDetector:
                 dict: A dictionary containing the predicted fruit, disease, and prediction confidence.
         """
         try:
+            with open(f"{self.output_model_path}_class_names.json", 'r') as f:
+                class_names = json.load(f)
+
             # Load model with custom objects and class labels
             model = keras.models.load_model(
                 self.output_model_path,
@@ -1199,13 +1503,13 @@ class AdvancedPathogenDetector:
                     'SparseF1': SparseF1,
                     'SparsePrecision': SparsePrecision,
                     'SparseRecall': SparseRecall,
+                    'SparseMacroF1': SparseMacroF1,
                     'HybridAttentionBlock': HybridAttentionBlock,
                     'ChannelAttention': ChannelAttention,
-                    'SpatialAttention': SpatialAttention
+                    'SpatialAttention': SpatialAttention,
+                    'SeparableBlock': SeparableBlock
                 }
             )
-            with open(f"{self.output_model_path}_class_names.json", 'r') as f:
-                class_names = json.load(f)
 
             # Load and preprocess image
             img = keras.preprocessing.image.load_img(
@@ -1244,7 +1548,6 @@ class AdvancedPathogenDetector:
             logger.error(f"Prediction failed: {str(e)}")
             raise
 
-
     def _apply_tta_augmentation(self, img_array):
         """
             Apply random augmentations to an image for Test-Time Augmentation (TTA).
@@ -1273,6 +1576,8 @@ class AdvancedPathogenDetector:
         )
 
 
+
+
 def main():
     print(r"""
           _|_|                        _|      _|  _|            _|
@@ -1291,9 +1596,10 @@ def main():
     Backbone: EfficientNetV2B2 (ImageNet pretrained)
 
     Custom Head:
+    • Separable Block with Depthwise and Pointwise Convolutions
     • Hybrid Attention Block (Channel + Spatial Attention)
     • Global Average Pooling
-    • Dense Layers (256 units) with SWISH activation
+    • Dense Layers (512 units) with SWISH activation
     • Batch Normalization + Dropout
     • Temperature Scaling for confidence calibration
     • Softmax Classification Layer
@@ -1328,7 +1634,14 @@ def main():
     parser.add_argument('--image', help='Image for prediction')
     parser.add_argument('--tune', type=str, choices=['random', 'bayesian', 'hyperband'],
                         help='Enable hyperparameter tuning with the specified method (random, bayesian, or hyperband)')
+    parser.add_argument('--quantized', help="Enable prediction with quantized model")
     args = parser.parse_args()
+
+#     if args.quantized and not args.image:
+#         detector = AdvancedPathogenDetector(args.dataset, args.output)
+#         quantizer = ModelQuantizer(detector._train_ds, args.output)
+#         tflite_model_path = quantizer._quantize_model(detector.model)
+#         quantizer.validate_quantized_model(tflite_model_path, validation_ds)
 
     # Validate arguments
     if not args.image and not args.dataset:
@@ -1339,7 +1652,10 @@ def main():
     detector = AdvancedPathogenDetector(args.dataset, args.output)
 
     if args.image:
-        result = detector.predict(args.image)
+        if args.quantized:
+            result = detector.quantized_predict(args.image)
+        else:
+            result = detector.predict(args.image)
         print(json.dumps(result, indent=2))
     elif args.dataset:
         if args.tune:
