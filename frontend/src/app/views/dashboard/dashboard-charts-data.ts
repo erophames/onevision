@@ -46,13 +46,13 @@ export class DashboardChartsData {
 
       this.mainChart.options = {
         responsive: true,
-        scales: this.getScales() // Use the getScales function here
+        scales: this.getScales({labels: labels, values: values}),
       };
     });
   }
 
   // Initialize the chart with default or custom settings
-  initChart(data?: { labels: string[]; values: number[] }) {
+  initChart(data?: { labels: string[]; values: number[] } | null) {
     const labels = data ? data.labels : [];
     const values = data ? data.values : [];
 
@@ -69,12 +69,12 @@ export class DashboardChartsData {
 
     this.mainChart.options = {
       responsive: true,
-      scales: this.getScales() // Apply scales settings
+      scales: this.getScales(data) // Apply scales settings
     };
   }
 
   // Return chart scales configuration
-  getScales() {
+  getScales(data: { labels: string[]; values: number[] } | null | undefined) {
     const colorBorderTranslucent = getStyle('--cui-border-color-translucent');
     const colorBody = getStyle('--cui-body-color');
 
@@ -95,7 +95,7 @@ export class DashboardChartsData {
         grid: {
           color: colorBorderTranslucent
         },
-        max: 10, // You can change the max as per your data range
+        max: data?.values.length ? Math.max(...data.values):10,
         beginAtZero: true,
         ticks: {
           color: colorBody,

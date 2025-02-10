@@ -96,7 +96,7 @@ export class DashboardComponent implements OnInit {
     if (this.mainChartRef()) {
       setTimeout(() => {
         const options: ChartOptions = { ...this.mainChart.options };
-        const scales = this.#chartsData.getScales();
+        const scales = this.#chartsData.getScales(null);
         this.mainChartRef().options.scales = { ...options.scales, ...scales };
         this.mainChartRef().update();
       });

@@ -1,66 +1,37 @@
-<div class="container">
-  <div class="section">
-    <div class="section-title">Input Specification</div>
-    <div class="section-content">
-      <p><strong>Shape:</strong> <span class="code">[300, 300, 3]</span></p>
-      <p><strong>Data Type:</strong> <span class="code">float32</span></p>
-      <p><strong>Normalization:</strong></p>
-      <ul class="list">
-        <li class="list-item"><strong>Formula:</strong> <span class="code">(x / 127.5) - 1.0</span></li>
-        <li class="list-item"><strong>Expected Range:</strong> <span class="code">[-1.0, 1.0]</span></li>
-      </ul>
-    </div>
-  </div>
-
-  <div class="section">
-    <div class="section-title">Class Information</div>
-    <div class="section-content">
-      <p><strong>Total Classes:</strong> <span class="code">146</span></p>
-      <p><strong>Class Format:</strong> <span class="code">plant_disease_variant</span></p>
-      <p><strong>All Classes:</strong></p>
-      <ul class="list">
-        <li class="list-item">Apple Apple_scab</li>
-        <li class="list-item">Apple Black_rot</li>
-        <li class="list-item">Apple Cedar_apple_rust</li>
-        <li class="list-item">Apple Mosaic_virus</li>
-        <li class="list-item">Apple healthy</li>
-        <!-- Add more classes as needed -->
-        <li class="list-item">...</li>
-        <li class="list-item">Wheat Yellow_Rust</li>
-      </ul>
-    </div>
-  </div>
-
-  <div class="section">
-    <div class="section-title">Base Model</div>
-    <div class="section-content">
-      <p><strong>Name:</strong> <span class="code">efficientnetv2-b2</span></p>
-      <p><strong>Trainable Layers:</strong> <span class="code">5</span></p>
-      <p><strong>Total Parameters:</strong> <span class="code">8,769,374</span></p>
-    </div>
-  </div>
-
-  <div class="section">
-    <div class="section-title">Prediction Head</div>
-    <div class="section-content">
-      <p><strong>Layers:</strong></p>
-      <ul class="list">
-        <li class="list-item"><strong>Name:</strong> input_layer_2, <strong>Type:</strong> InputLayer, <strong>Parameters:</strong> <span class="code">0</span></li>
-        <li class="list-item"><strong>Name:</strong> dropout, <strong>Type:</strong> Dropout, <strong>Parameters:</strong> <span class="code">0</span></li>
-        <li class="list-item"><strong>Name:</strong> dense, <strong>Type:</strong> Dense, <strong>Parameters:</strong> <span class="code">360,704</span></li>
-        <li class="list-item"><strong>Name:</strong> batch_normalization, <strong>Type:</strong> BatchNormalization, <strong>Parameters:</strong> <span class="code">1,024</span></li>
-        <li class="list-item"><strong>Name:</strong> dense_1, <strong>Type:</strong> Dense, <strong>Parameters:</strong> <span class="code">37,522</span></li>
-      </ul>
-    </div>
-  </div>
-
-  <div class="section">
-    <div class="section-title">Pricing Model</div>
-    <div class="section-content">
-      <p><strong>Base Processing Cost:</strong> <span class="code">1.0</span></p>
-      <p><strong>Letterboxing Cost:</strong> <span class="code">0.5</span></p>
-      <p><strong>Cost per TTA Step:</strong> <span class="code">0.2</span></p>
-      <p><strong>Example Calculation:</strong> <span class="code">BASE (1.0) + LETTERBOX (0.5 if needed) + TTA (5 steps × 0.2)</span></p>
-    </div>
-  </div>
-</div>
+<c-row>
+  <c-col xs>
+    <c-card class="mb-1">
+      <c-card-body class="p-0">
+<table cTable [responsive]="true">
+  <thead>
+  <tr>
+    <th>Layer (type)</th>
+    <th>Output Shape</th>
+    <th class="d-none d-md-table-cell d-lg-table-cell d-xl-table-cell">Param #</th>
+  </tr>
+  </thead>
+  <tbody>
+  <ng-container *ngFor="let layer of layers; let i = index">
+  <tr
+      (click)="toggleDescription(i)"
+      [class.active]="layer.isExpanded">
+    <td>
+<!--      <fa-icon class="layer-icon"  [icon]="getLayerIcon(layer.type)"></fa-icon>-->
+      {{layer.name}} ({{layer.type}})
+    </td>
+    <td>{{layer.outputShape}}</td>
+    <td class="d-none d-md-table-cell d-lg-table-cell d-xl-table-cell">{{layer.params | number}}</td>
+  </tr>
+  <tr *ngIf="layer.isExpanded" class="description-row">
+    <td colspan="3" class="description-cell">
+      <h4>{{layer.name}}  Details</h4>
+      <p>{{layer.description}}</p>
+    </td>
+  </tr>
+  </ng-container>
+  </tbody>
+</table>
+      </c-card-body>
+    </c-card>
+  </c-col>
+</c-row>
