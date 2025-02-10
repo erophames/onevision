@@ -960,12 +960,15 @@ class AdvancedPathogenDetector:
         # Save class labels from original dataset
         self.class_labels = original_train_ds.class_names
 
-        # Calculate class weights
-        train_labels = np.concatenate([y for x, y in original_train_ds], axis=0)
+        # Compute class weights safely
+        train_labels = np.array([])
+        for _, y in original_train_ds:
+            train_labels = np.concatenate((train_labels, y.numpy()))
+
         self.class_weights = class_weight.compute_class_weight(
-            'balanced',
-            classes=np.unique(train_labels),
-            y=train_labels
+            class_weight="balanced",
+            classes=np.array(np.unique(train_labels), dtype=np.int64),
+            y=train_labels.astype(np.int64)
         )
         self.class_weights = dict(enumerate(self.class_weights))
 
@@ -976,7 +979,7 @@ class AdvancedPathogenDetector:
         ).map(
             lambda x, y: (preprocess_input(x), y),  # Apply preprocessing here
             num_parallel_calls=tf.data.AUTOTUNE
-        ).shuffle(buffer_size=300).prefetch(buffer_size=tf.data.AUTOTUNE)
+        ).shuffle(buffer_size=500).prefetch(buffer_size=tf.data.AUTOTUNE)
 
         # Prefetch validation data and apply preprocessing (no augmentation)
         val_ds = original_val_ds.map(
